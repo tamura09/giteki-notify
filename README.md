@@ -1,53 +1,103 @@
-# repo-template
+# giteki-notify
 
-新しいリポジトリの雛形。`.github/workflows/pr-review.yml` だけが入っている。
+総務省 電波利用ポータルの [Web-API](https://www.tele.soumu.go.jp/j/sys/equ/tech/webapi/) を
+定期的に検索し、監視している申請者の技術基準適合証明等が新しく登録されたら Discord に
+流す Lambda。
 
-## 使い方
+今の監視対象は **Ubiquiti Inc.** の1件だけ。未発表の製品は、発表よりも技適の登録のほうが
+先に来ることがあるので、そこを見ている。
+
+`provided.al2023` / `arm64`、us-east-1、EventBridge で1日1回。関数・スケジュール・state
+バケット・SSM パラメータは [tamura09/aws-terraform](https://github.com/tamura09/aws-terraform)
+にあり、このリポジトリはコードだけ。
+
+## 何を見ているか
+
+一覧取得 API (`/giteki/list`) に「氏名又は名称」(`NAM`) を部分一致で投げ、返ってきた
+レコードを証明番号ごとにまとめて、前回との差分を Discord に投げる。
+
+監視対象のリストはこのリポジトリには無い。Terraform が JSON を組み立てて `TARGETS`
+で渡すので、別のメーカーを足すのは変数の変更だけで済む。
+
+```json
+[{ "id": "ubiquiti", "label": "Ubiquiti", "applicant_name": "Ubiquiti", "type_name": "" }]
+```
+
+- `id` は state オブジェクトのキー。検索条件より長生きする必要がある。変えるとその
+  ターゲットは「一度も見ていない」状態に戻り、次の実行は現在の登録内容を記録するだけで
+  何も報告しない (つまりその日に登録された技適を黙って飲み込む)
+- `applicant_name` は `NAM` 条件。API 側が全半角を正規化するので、半角の `Ubiquiti` で
+  全角の「Ｕｂｉｑｕｉｔｉ　Ｉｎｃ．」も旧名義の「Ｕbiquiti　Ｎetworks，　Ｉnc．」も
+  当たる。短く書いてあるのは意図的で、社名が変わっても監視が続くため
+- `type_name` は任意の `TN` 条件 (機器の型式又は名称、部分一致)。空なら全機種
+
+## 通知の単位は証明番号
+
+台帳は工事設計ごとに1レコードなので、1台のアクセスポイントが3〜4レコードある
+(2.4GHz、5GHz、6GHz…)。そのまま投げると1製品で3通鳴るため、証明番号でまとめて
+1通にしている。人が「技適が取れた」と言うときの単位もこれ。
+
+- **新しい証明番号** → 新規登録として通知 (メンションあり)
+- **既知の番号のレコードが増えた** → 更新として通知 (メンションなし)。工事設計の追加や
+  変更で、何が変わったかは「備考」に出る
+
+通知には外観写真等 PDF (`/giteki/file`) へのリンクを付けている。未発表の製品について、
+それが何なのかを示すのはこれだけ。
+
+## 初回実行は記録だけ
+
+state オブジェクトにそのターゲットの記録が1つも無い実行は、現在の登録内容を記録して
+何も通知しない。そうしないとターゲットを足した瞬間にメーカーの全履歴が流れる
+(Ubiquiti なら68通)。
+
+検索結果が0件のターゲットもこの記録を作る。「まだ登録が無い」と「まだ見ていない」を
+区別するためで、前者なら次に登録された1件目がちゃんと通知される。
+
+state は S3 の JSON 1つ。証明番号ごとに年月日・レコード数・型式を持つ。一度入れた番号は
+消さない。台帳から証明が消えることは無いが、備考の書き換えで「氏名又は名称」が変わって
+検索に当たらなくなることはあり、忘れると次に戻ってきたときに新規登録として鳴る。
+
+## 1回の実行で投げる上限
+
+`MAX_NOTIFICATIONS` (既定10) を超えた分は、個別に投げずに1通のまとめに落とす。長く
+失敗していた後の実行と、state を意図的に消して再通知させる実行のためにある。上限で
+止めた分も state には記録するので、後から「今登録された」ように通知されることはない。
+
+## User-Agent の形
+
+API のドキュメントには「User-Agent を設定してください」と書いてあるが、**形も見られる**。
+`giteki-notify/1.0` や Go の既定の `Go-http-client/2.0` のような素のトークンは 403 になり、
+返ってくるのは JSON のエラーではなく HTML の「該当するページがありません」。URL を
+間違えたように見えるので、原因にたどり着くのに時間がかかる。
+
+`Mozilla/5.0 (...)` の括弧付きコメントの形なら通る。既定値はその形のまま中身で自分を
+名乗っている。
+
+```
+Mozilla/5.0 (compatible; giteki-notify/1.0; +https://github.com/tamura09/giteki-notify)
+```
+
+## 環境変数
+
+| 変数 | 必須 | 既定 | 内容 |
+| --- | --- | --- | --- |
+| `TARGETS` | ● | — | 監視対象の JSON 配列 (上記) |
+| `DISCORD_WEBHOOK_PARAMETER_NAME` | ● | — | Webhook URL を入れた SSM SecureString の名前 |
+| `STATE_BUCKET` | ● | — | state オブジェクトのバケット |
+| `STATE_KEY` | | `giteki-notify/state.json` | state オブジェクトのキー |
+| `MENTION_ROLE_ID` | | — | 新規登録のときにメンションするロール ID |
+| `MAX_NOTIFICATIONS` | | `10` | 1回の実行で個別に投げる上限 |
+| `API_BASE_URL` | | `https://www.tele.soumu.go.jp/giteki` | API のベース URL |
+| `USER_AGENT` | | 上記 | API に送る User-Agent |
+| `REQUEST_TIMEOUT` | | `30s` | 1リクエストのタイムアウト |
+
+## 開発
 
 ```bash
-gh repo create tamura09/<NAME> --private --template tamura09/repo-template
+go vet ./...
+go test ./...
 ```
 
-作ったあとに [tamura09/github-terraform](https://github.com/tamura09/github-terraform)
-の `locals.tf` へ追加すると、デフォルトブランチと `main` のブランチ保護、マージ方法が
-Terraform の管理下に入る。追加のしかたはそちらの README にある。
-
-## 入っているもの
-
-### `.github/workflows/pr-review.yml`
-
-`pr-review.yml` は [tamura09/claude-pr-review](https://github.com/tamura09/claude-pr-review)
-の再利用可能ワークフローを呼ぶだけ。PR ごとに Claude がレビューを投稿し、
-`claude-review` のチェックを出す。マージも承認もしない。
-
-OAuth トークンはリポジトリの secret には置かない。AWS の SSM に1本だけ置いてあり、
-呼び出されたワークフローが OIDC で読む。だから新しいリポジトリでも secret の登録は
-要らない。
-
-### `renovate.json`
-
-依存の更新を [tamura09/renovate-runner](https://github.com/tamura09/renovate-runner)
-に任せるための設定。共有プリセットを extends するだけで、リポジトリ固有の指定は
-書かない。
-
-**置いてあるだけでは動かない**。実際に更新 PR が来るのは
-[tamura09/github-terraform](https://github.com/tamura09/github-terraform) の
-`locals.tf` で `enable_renovate = true` を書いたリポジトリだけ。既定は無効なので、
-テンプレートから作ったままでは Renovate は走らない。
-
-有効にしたくなったら `locals.tf` にフラグを足す。このファイルは触らなくてよい。
-
-```hcl
-    <NAME> = {
-      enable_renovate = true
-    }
-```
-
-言語ごとの設定 (npm のグループ分けなど) が要るときは、このファイルに
-`packageRules` を足すのではなく、まず共有プリセット側を直すか検討する。
-1リポジトリにしか当てはまらない設定だけをここに書く。
-
-## ここに置かないもの
-
-言語ごとのCIやデプロイは、リポジトリによって中身が違いすぎるので入れていない。
-必要になったら既存のリポジトリからコピーする。
+テストは実際の API を叩かない。`stubAPI` が件数取得のページングも、0件のときに
+`giteki` キーが消えることも、エラー時の `errs` / `err` の形も含めて本物の挙動を
+再現している。

@@ -1,0 +1,113 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_ACCOUNT_ID: "222165754930"
+  AWS_ROLE_TO_ASSUME: "arn:aws:iam::222165754930:role/github-actions-lambda-artifacts"
+  ARTIFACT_NAME: giteki-notify
+  FUNCTION_NAME: giteki-notify
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test ./...
+
+  deploy:
+    name: Deploy
+    needs: test
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build bootstrap binary
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -tags lambda.norpc -ldflags="-s -w" -o bootstrap .
+
+      - name: Package artifact
+        run: |
+          touch -t 202001010000.00 bootstrap
+          zip -X -q "${ARTIFACT_NAME}.zip" bootstrap
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: us-east-1
+
+      - name: Upload artifact to S3
+        run: |
+          aws s3 cp "${ARTIFACT_NAME}.zip" \
+            "s3://aws-terraform-lambda-artifacts-${AWS_ACCOUNT_ID}-us-east-1/lambda/${ARTIFACT_NAME}.zip"
+
+      # The function is created by Terraform in tamura09/aws-terraform, and that
+      # configuration reads the artifact uploaded above -- so on the very first
+      # push the object has to exist before the function can. Failing here would
+      # make that unavoidable ordering look like a broken build, so a missing
+      # function is reported and skipped instead. Every later push finds the
+      # function and updates it.
+      #
+      # The existence check is get-function-configuration, not get-function: the
+      # role this workflow assumes is allowed lambda:GetFunctionConfiguration and
+      # lambda:UpdateFunctionCode only. get-function comes back AccessDenied,
+      # which is indistinguishable here from a function that is not there -- so
+      # the step skipped itself on a function that had just been created.
+      - name: Deploy Lambda function code
+        run: |
+          if ! aws lambda get-function-configuration --function-name "${FUNCTION_NAME}" --no-cli-pager >/dev/null 2>&1; then
+            echo "::notice::${FUNCTION_NAME} does not exist yet. The artifact is in S3; apply tamura09/aws-terraform to create the function."
+            exit 0
+          fi
+
+          aws lambda update-function-code \
+            --function-name "${FUNCTION_NAME}" \
+            --s3-bucket "aws-terraform-lambda-artifacts-${AWS_ACCOUNT_ID}-us-east-1" \
+            --s3-key "lambda/${ARTIFACT_NAME}.zip" \
+            --no-cli-pager
+          aws lambda wait function-updated --function-name "${FUNCTION_NAME}"
