@@ -4,12 +4,12 @@
 定期的に検索し、監視している申請者の技術基準適合証明等が新しく登録されたら Discord に
 流す Lambda。
 
-今の監視対象は **Ubiquiti Inc.** の1件だけ。未発表の製品は、発表よりも技適の登録のほうが
-先に来ることがあるので、そこを見ている。
+今の監視対象は **Ubiquiti**、**Fanvil**、**Grandstream** の3件。未発表の製品は、発表よりも
+技適の登録のほうが先に来ることがあるので、そこを見ている。
 
 `provided.al2023` / `arm64`、us-east-1、EventBridge で1日1回。関数・スケジュール・state
-バケット・SSM パラメータは [tamura09/aws-terraform](https://github.com/tamura09/aws-terraform)
-にあり、このリポジトリはコードだけ。
+バケット・SSM パラメータは [tamura09/terraform](https://github.com/tamura09/terraform)
+(`modules/aws-us-east-1/`) にあり、このリポジトリはコードだけ。
 
 ## 何を見ているか
 
