@@ -103,7 +103,7 @@ jobs:
           aws s3 cp "${ARTIFACT_NAME}.zip" \
             "s3://aws-terraform-lambda-artifacts-${AWS_ACCOUNT_ID}-us-east-1/lambda/${ARTIFACT_NAME}.zip"
 
-      # The function is created by Terraform in tamura09/aws-terraform, and that
+      # The function is created by Terraform in tamura09/terraform, and that
       # configuration reads the artifact uploaded above -- so on the very first
       # push the object has to exist before the function can. Failing here would
       # make that unavoidable ordering look like a broken build, so a missing
@@ -118,7 +118,7 @@ jobs:
       - name: Deploy Lambda function code
         run: |
           if ! aws lambda get-function-configuration --function-name "${FUNCTION_NAME}" --no-cli-pager >/dev/null 2>&1; then
-            echo "::notice::${FUNCTION_NAME} does not exist yet. The artifact is in S3; apply tamura09/aws-terraform to create the function."
+            echo "::notice::${FUNCTION_NAME} does not exist yet. The artifact is in S3; apply tamura09/terraform to create the function."
             exit 0
           fi
 
