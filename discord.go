@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -110,14 +111,14 @@ func (a *app) postWebhook(ctx context.Context, webhookURL string, payload webhoo
 func (a *app) postWebhookOnce(ctx context.Context, webhookURL string, body []byte) (time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return 0, withoutURL(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", discordUserAgent)
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return time.Second, err
+		return time.Second, withoutURL(err)
 	}
 	defer resp.Body.Close()
 
@@ -165,13 +166,24 @@ func parseWebhookURL(raw string) (string, error) {
 
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("parse webhook URL: %w", err)
+		return "", fmt.Errorf("parse webhook URL: %w", withoutURL(err))
 	}
 	if parsed.Scheme != "https" || parsed.Host == "" {
 		return "", fmt.Errorf("webhook URL must be an absolute https URL")
 	}
 
 	return trimmed, nil
+}
+
+// withoutURL drops the URL that net/http and net/url put into their errors. A
+// webhook URL carries its token in the path, so the error would otherwise
+// write the credential into CloudWatch Logs.
+func withoutURL(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("%s webhook: %w", urlErr.Op, urlErr.Err)
+	}
+	return err
 }
 
 func truncate(value string, limit int) string {
