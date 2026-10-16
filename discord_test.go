@@ -103,6 +103,22 @@ func TestPostWebhookSendsADiscordShapedUserAgent(t *testing.T) {
 	}
 }
 
+func TestPostWebhookKeepsTheURLOutOfTransportErrors(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	client := newTestApp()
+	client.httpClient = server.Client()
+	webhookURL := server.URL + "/api/webhooks/1/secret-token"
+	server.Close()
+
+	_, err := client.postWebhookOnce(context.Background(), webhookURL, []byte("{}"))
+	if err == nil {
+		t.Fatal("postWebhookOnce succeeded against a closed server")
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Errorf("error %q contains the webhook token", err)
+	}
+}
+
 func TestParseWebhookURL(t *testing.T) {
 	for _, testCase := range []struct {
 		name    string
@@ -114,12 +130,16 @@ func TestParseWebhookURL(t *testing.T) {
 		{name: "empty", given: "   ", wantErr: "empty"},
 		{name: "terraform placeholder", given: "MANAGED_OUTSIDE_TERRAFORM", wantErr: "absolute https URL"},
 		{name: "http", given: "http://discord.com/api/webhooks/1/abc", wantErr: "absolute https URL"},
+		{name: "unparsable", given: "https://discord.com/api/webhooks/1/abc%zz", wantErr: "parse webhook URL"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got, err := parseWebhookURL(testCase.given)
 			if testCase.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
 					t.Fatalf("error = %v, want it to mention %q", err, testCase.wantErr)
+				}
+				if strings.Contains(err.Error(), "/abc") {
+					t.Errorf("error %q contains the webhook token", err)
 				}
 				return
 			}
