@@ -3,6 +3,7 @@ package main
 import (
 	"sort"
 	"strings"
+	"time"
 )
 
 // certificate is every record sharing one 証明番号 / 認証番号. The register stores
@@ -195,4 +196,27 @@ type change struct {
 	// PreviousRecordCount is how many records this number had the last time it
 	// was seen. Only meaningful for changeAmended.
 	PreviousRecordCount int
+}
+
+// dropLatePublished splits off the new certifications whose 年月日 is more than
+// maxAge before now. They are not news: the register published them long after
+// they were granted, and the product they describe is already on sale.
+//
+// Only changeNew is filtered. An amendment is reported quietly anyway, and its
+// 年月日 is the original certification's, so its age says nothing about when
+// the amendment happened. A date that does not parse is kept, so a format change
+// in the register shows up as noise rather than as silence.
+func dropLatePublished(changes []change, now time.Time, maxAge time.Duration) (kept, late []change) {
+	kept = changes[:0:0]
+	for _, item := range changes {
+		if item.Kind == changeNew {
+			granted, err := time.Parse(time.DateOnly, item.Certificate.Date())
+			if err == nil && now.Sub(granted) > maxAge {
+				late = append(late, item)
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	return kept, late
 }

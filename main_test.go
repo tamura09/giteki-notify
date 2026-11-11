@@ -311,3 +311,60 @@ func TestLoadSettingsDefaultsAndOverrides(t *testing.T) {
 		t.Errorf("settings = %+v, want the overrides applied", current)
 	}
 }
+
+func TestHandleRecordsALatePublishedCertificationWithoutNotifying(t *testing.T) {
+	env := newTestEnvironment(t, ucCastPro())
+
+	if err := env.app.handle(context.Background()); err != nil {
+		t.Fatalf("seeding run: %v", err)
+	}
+
+	// (一社)ＴＡＣ publishes Ubiquiti's certifications about a year after their
+	// date, by which time the product is already on sale.
+	env.api.setRecords(append(
+		[]record{
+			testRecord("020-250999", "2026-09-12", "ＵＤＭ－Ｐｒｏ－Ｍａｘ", "第２条第１９号に規定する特定無線設備", "Ｇ１Ｄ"),
+			testRecord("020-240369", "2025-09-10", "ＵＮＡＳ－２－Ｗ", "第２条第１９号に規定する特定無線設備", "Ｇ１Ｄ"),
+		},
+		ucCastPro()...,
+	))
+
+	if err := env.app.handle(context.Background()); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+
+	posts := env.hook.received()
+	if len(posts) != 1 {
+		t.Fatalf("posted %d messages, want only the recent one: %+v", len(posts), posts)
+	}
+	if got := fieldValue(t, posts[0], "番号"); got != "020-250999" {
+		t.Errorf("番号 = %q, want 020-250999", got)
+	}
+
+	// Recorded all the same, so lowering the limit later does not bring it back.
+	stored := env.objects.stored(t, defaultStateKey)
+	if _, ok := stored.Targets["ubiquiti"].Certificates["020-240369"]; !ok {
+		t.Errorf("late certification was not recorded: %+v", stored.Targets["ubiquiti"].Certificates)
+	}
+}
+
+func TestHandleMaxCertificateAgeIsConfigurable(t *testing.T) {
+	env := newTestEnvironment(t, ucCastPro())
+	t.Setenv("MAX_CERTIFICATE_AGE_DAYS", "400")
+
+	if err := env.app.handle(context.Background()); err != nil {
+		t.Fatalf("seeding run: %v", err)
+	}
+
+	env.api.setRecords(append(
+		[]record{testRecord("020-240369", "2025-09-10", "ＵＮＡＳ－２－Ｗ", "第２条第１９号に規定する特定無線設備", "Ｇ１Ｄ")},
+		ucCastPro()...,
+	))
+
+	if err := env.app.handle(context.Background()); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if posts := env.hook.received(); len(posts) != 1 {
+		t.Fatalf("posted %d messages, want 1 with a 400-day limit", len(posts))
+	}
+}

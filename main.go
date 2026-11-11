@@ -29,6 +29,17 @@ const (
 	// and the channel stays readable.
 	defaultMaxNotifications = 10
 
+	// defaultMaxCertificateAgeDays is how old a certification may be, by its own
+	// 年月日, when it first turns up and still be reported as new.
+	//
+	// The register does not publish everything as it is granted. (一社)ＴＡＣ's
+	// 020- certifications for Ubiquiti appear about a year after their date --
+	// the applicant asks for publication to be deferred until the product is
+	// out -- so by the time this function sees one, the product has been on
+	// sale for months. Ordinary entries arrive within a few weeks. Half a year
+	// sits well clear of both.
+	defaultMaxCertificateAgeDays = 180
+
 	// defaultUserAgent identifies this function to 総務省's API, which asks for a
 	// User-Agent and may refuse requests without one.
 	//
@@ -90,7 +101,10 @@ type settings struct {
 	// means nobody finds out until they look at the channel.
 	mentionRoleID    string
 	maxNotifications int
-	requestTimeout   time.Duration
+	// maxCertificateAge drops new certifications whose 年月日 is older than
+	// this when they first appear. See defaultMaxCertificateAgeDays.
+	maxCertificateAge time.Duration
+	requestTimeout    time.Duration
 }
 
 func main() {
@@ -173,7 +187,11 @@ func (a *app) check(ctx context.Context, webhookURL string, current settings, wa
 		return nil
 	}
 
-	changes := state.changes(watched.ID, certificates)
+	changes, late := dropLatePublished(state.changes(watched.ID, certificates), now, current.maxCertificateAge)
+	for _, item := range late {
+		log.Printf("target %s: %s %s dated %s was published late, recording without notifying",
+			watched.ID, item.Certificate.Number, item.Certificate.TypeName(), item.Certificate.Date())
+	}
 	if len(changes) == 0 {
 		log.Printf("target %s: %d certificates (%d records), nothing new", watched.ID, len(certificates), len(result.Records))
 		state.record(watched.ID, result, certificates, now)
@@ -253,6 +271,11 @@ func loadSettings() (settings, error) {
 		return settings{}, err
 	}
 
+	maxCertificateAgeDays, err := positiveIntEnv("MAX_CERTIFICATE_AGE_DAYS", defaultMaxCertificateAgeDays)
+	if err != nil {
+		return settings{}, err
+	}
+
 	return settings{
 		targets:              targets,
 		apiBaseURL:           envOr("API_BASE_URL", defaultAPIBaseURL),
@@ -261,6 +284,7 @@ func loadSettings() (settings, error) {
 		stateKey:             envOr("STATE_KEY", defaultStateKey),
 		mentionRoleID:        strings.TrimSpace(os.Getenv("MENTION_ROLE_ID")),
 		maxNotifications:     maxNotifications,
+		maxCertificateAge:    time.Duration(maxCertificateAgeDays) * 24 * time.Hour,
 		requestTimeout:       requestTimeout,
 	}, nil
 }
