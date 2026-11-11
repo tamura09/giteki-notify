@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ucCastPro is the shape that makes grouping necessary: one 認証番号 covering
@@ -106,5 +107,28 @@ func TestCertificateExteriorAttachmentURLSkipsRecordsWithout(t *testing.T) {
 	}
 	if want := "AFK=" + second.AttachmentFileKey; !strings.Contains(link, want) {
 		t.Errorf("link = %s, want it to carry %s", link, want)
+	}
+}
+
+func TestDropLatePublishedKeepsAmendmentsAndUnparsableDates(t *testing.T) {
+	now := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	maxAge := 180 * 24 * time.Hour
+
+	old := certificate{Number: "020-250369", Records: []record{{Date: "2025-11-07"}}}
+	recent := certificate{Number: "220-J12371", Records: []record{{Date: "2026-09-30"}}}
+	odd := certificate{Number: "999-000001", Records: []record{{Date: "令和8年1月1日"}}}
+
+	kept, late := dropLatePublished([]change{
+		{Certificate: old, Kind: changeNew},
+		{Certificate: recent, Kind: changeNew},
+		{Certificate: old, Kind: changeAmended},
+		{Certificate: odd, Kind: changeNew},
+	}, now, maxAge)
+
+	if len(late) != 1 || late[0].Certificate.Number != "020-250369" || late[0].Kind != changeNew {
+		t.Fatalf("late = %+v, want only the old new certification", late)
+	}
+	if len(kept) != 3 {
+		t.Fatalf("kept %d changes, want 3: %+v", len(kept), kept)
 	}
 }
